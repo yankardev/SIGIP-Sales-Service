@@ -1,0 +1,4 @@
+pe\edu\cibertec\sigip\salesservice\repository\PedidoRepositoryTest.class
+pe\edu\cibertec\sigip\salesservice\client\CatalogServiceFallbackFactoryTest.class
+pe\edu\cibertec\sigip\salesservice\model\EstadoPedidoTest.class
+pe\edu\cibertec\sigip\salesservice\controller\PedidoFlujoIntegrationTest.class
