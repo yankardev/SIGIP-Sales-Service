@@ -5,9 +5,9 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import pe.edu.cibertec.sigip.common.error.RecursoNoEncontradoException;
-import pe.edu.cibertec.sigip.common.security.UsuarioActual;
 import pe.edu.cibertec.sigip.common.error.ReglaNegocioException;
 import pe.edu.cibertec.sigip.common.evento.PedidoEvento;
+import pe.edu.cibertec.sigip.common.security.UsuarioActual;
 import pe.edu.cibertec.sigip.salesservice.client.CatalogServiceClient;
 import pe.edu.cibertec.sigip.salesservice.client.ServicioCatalogoResponse;
 import pe.edu.cibertec.sigip.salesservice.dto.*;
@@ -26,7 +26,9 @@ import java.util.Map;
 /**
  * Reglas del pedido:
  * - El precio se obtiene del catálogo (Feign), nunca del navegador.
- * - Un CLIENTE solo ve y modifica sus propios pedidos; ADMIN ve todos.
+ * - CLIENTE solo consulta y modifica sus propios pedidos.
+ * - ADMIN, VENTAS y OPERACIONES pueden consultar los pedidos de la empresa.
+ * - ADMIN/VENTAS pueden registrar un pedido de mostrador indicando el usuario CLIENTE.
  * - Solo se edita o elimina un pedido REGISTRADO (aún sin pagos).
  * - Los cambios de estado siguen las transiciones permitidas de {@link EstadoPedido}.
  */
@@ -45,7 +47,7 @@ public class PedidoService {
     @Transactional(readOnly = true)
     public List<PedidoResponse> listar(UsuarioActual usuario, EstadoPedido estado) {
         List<Pedido> pedidos;
-        if (!usuario.esAdmin()) {
+        if (!usuario.esInterno()) {
             pedidos = pedidoRepository.findByClienteOrderByFechaPedidoDesc(usuario.nombre());
         } else if (estado != null) {
             pedidos = pedidoRepository.findByEstadoOrderByFechaPedidoDesc(estado);
@@ -67,9 +69,10 @@ public class PedidoService {
     public PedidoResponse registrar(PedidoRequest request, UsuarioActual usuario) {
         ServicioCatalogoResponse servicio = servicioActivo(request.idservicio());
         LocalDateTime ahora = LocalDateTime.now();
+        String cliente = resolverCliente(request, usuario);
 
         Pedido pedido = Pedido.builder()
-                .cliente(usuario.nombre())
+                .cliente(cliente)
                 .idservicio(servicio.idservicio())
                 .nombreServicio(servicio.nombre())
                 .precioUnitario(servicio.precioBase())
@@ -78,7 +81,7 @@ public class PedidoService {
                 .estado(EstadoPedido.REGISTRADO)
                 .especificaciones(request.especificaciones())
                 .observacion(Boolean.TRUE.equals(servicio.requiereCotizacion())
-                        ? "Precio referencial: el servicio requiere cotización" : null)
+                        ? "Precio referencial: el servicio requiere cotización comercial" : null)
                 .fechaPedido(ahora)
                 .fechaActualizacion(ahora)
                 .build();
@@ -122,7 +125,6 @@ public class PedidoService {
         return PedidoResponse.from(pedidoRepository.save(pedido));
     }
 
-    /** El cliente puede cancelar su pedido mientras no haya entrado a diseño o producción. */
     @Transactional
     public PedidoResponse cancelar(Integer id, UsuarioActual usuario) {
         Pedido pedido = buscarVisible(id, usuario);
@@ -162,13 +164,23 @@ public class PedidoService {
                 .orElseThrow(() -> new RecursoNoEncontradoException("Pedido no encontrado"));
     }
 
-    /** Un pedido ajeno se responde como "no encontrado" para no revelar que existe. */
+    /** Un cliente no puede descubrir pedidos ajenos. El personal interno sí puede consultarlos. */
     Pedido buscarVisible(Integer id, UsuarioActual usuario) {
         Pedido pedido = buscar(id);
-        if (!usuario.esAdmin() && !pedido.getCliente().equals(usuario.nombre())) {
+        if (!usuario.esInterno() && !pedido.getCliente().equals(usuario.nombre())) {
             throw new RecursoNoEncontradoException("Pedido no encontrado");
         }
         return pedido;
+    }
+
+    private String resolverCliente(PedidoRequest request, UsuarioActual usuario) {
+        if (!usuario.esInterno()) {
+            return usuario.nombre();
+        }
+        if (request.cliente() == null || request.cliente().isBlank()) {
+            throw new ReglaNegocioException("Seleccione el cliente para registrar el pedido");
+        }
+        return request.cliente().trim();
     }
 
     private void exigirEstado(Pedido pedido, EstadoPedido esperado, String mensaje) {
