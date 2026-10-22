@@ -15,6 +15,13 @@ public record PedidoRequest(
         Integer cantidad,
 
         @Size(max = 1000, message = "Las especificaciones no pueden superar 1000 caracteres")
-        String especificaciones
+        String especificaciones,
+
+        /**
+         * Usuario CLIENTE al que pertenece el pedido. Solo lo utiliza el personal interno;
+         * para un CLIENTE autenticado el backend ignora este valor y usa el usuario del JWT.
+         */
+        @Size(max = 50, message = "El cliente no puede superar 50 caracteres")
+        String cliente
 ) {
 }
