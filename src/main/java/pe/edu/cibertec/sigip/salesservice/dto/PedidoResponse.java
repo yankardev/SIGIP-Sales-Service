@@ -9,7 +9,10 @@ import java.util.Set;
 
 public record PedidoResponse(
         Integer idpedido,
+        Integer idcliente,
         String cliente,
+        String registradoPor,
+        Integer idcotizacion,
         Integer idservicio,
         String nombreServicio,
         BigDecimal precioUnitario,
@@ -20,11 +23,13 @@ public record PedidoResponse(
         String especificaciones,
         String observacion,
         LocalDateTime fechaPedido,
+        LocalDateTime fechaEntrega,
         LocalDateTime fechaActualizacion
 ) {
     public static PedidoResponse from(Pedido p) {
-        return new PedidoResponse(p.getIdpedido(), p.getCliente(), p.getIdservicio(), p.getNombreServicio(),
-                p.getPrecioUnitario(), p.getCantidad(), p.getTotal(), p.getEstado(), p.getEstado().siguientes(),
-                p.getEspecificaciones(), p.getObservacion(), p.getFechaPedido(), p.getFechaActualizacion());
+        return new PedidoResponse(p.getIdpedido(), p.getIdcliente(), p.getCliente(), p.getRegistradoPor(),
+                p.getIdcotizacion(), p.getIdservicio(), p.getNombreServicio(), p.getPrecioUnitario(),
+                p.getCantidad(), p.getTotal(), p.getEstado(), p.getEstado().siguientes(), p.getEspecificaciones(),
+                p.getObservacion(), p.getFechaPedido(), p.getFechaEntrega(), p.getFechaActualizacion());
     }
 }
