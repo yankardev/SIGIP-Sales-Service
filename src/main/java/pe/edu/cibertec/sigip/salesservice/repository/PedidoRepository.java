@@ -11,13 +11,13 @@ import java.util.List;
 
 public interface PedidoRepository extends JpaRepository<Pedido, Integer> {
 
+    /** Compatibilidad con pedidos antiguos donde cliente era el usuario final. */
     List<Pedido> findByClienteOrderByFechaPedidoDesc(String cliente);
 
+    List<Pedido> findByIdclienteOrderByFechaPedidoDesc(Integer idcliente);
     List<Pedido> findByEstadoOrderByFechaPedidoDesc(EstadoPedido estado);
-
     List<Pedido> findAllByOrderByFechaPedidoDesc();
 
-    /** Conteo agrupado en la BD (una consulta) en lugar de traer todos los pedidos a memoria. */
     @Query("select p.estado as estado, count(p) as cantidad from Pedido p group by p.estado")
     List<ConteoPorEstado> contarPorEstado();
 
@@ -26,7 +26,6 @@ public interface PedidoRepository extends JpaRepository<Pedido, Integer> {
 
     interface ConteoPorEstado {
         EstadoPedido getEstado();
-
         Long getCantidad();
     }
 }
