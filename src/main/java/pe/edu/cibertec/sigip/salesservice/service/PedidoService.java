@@ -5,12 +5,13 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import pe.edu.cibertec.sigip.common.error.RecursoNoEncontradoException;
-import pe.edu.cibertec.sigip.common.security.UsuarioActual;
 import pe.edu.cibertec.sigip.common.error.ReglaNegocioException;
 import pe.edu.cibertec.sigip.common.evento.PedidoEvento;
+import pe.edu.cibertec.sigip.common.security.UsuarioActual;
 import pe.edu.cibertec.sigip.salesservice.client.CatalogServiceClient;
 import pe.edu.cibertec.sigip.salesservice.client.ServicioCatalogoResponse;
 import pe.edu.cibertec.sigip.salesservice.dto.*;
+import pe.edu.cibertec.sigip.salesservice.model.Cliente;
 import pe.edu.cibertec.sigip.salesservice.model.EstadoPedido;
 import pe.edu.cibertec.sigip.salesservice.model.Pedido;
 import pe.edu.cibertec.sigip.salesservice.repository.PagoRepository;
@@ -24,11 +25,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Reglas del pedido:
- * - El precio se obtiene del catálogo (Feign), nunca del navegador.
- * - Un CLIENTE solo ve y modifica sus propios pedidos; ADMIN ve todos.
- * - Solo se edita o elimina un pedido REGISTRADO (aún sin pagos).
- * - Los cambios de estado siguen las transiciones permitidas de {@link EstadoPedido}.
+ * Flujo central de SIGIP. En el sistema interno Ventas registra un pedido para un
+ * cliente comercial y Operaciones continúa diseño/producción hasta la entrega.
  */
 @Service
 @RequiredArgsConstructor
@@ -40,12 +38,13 @@ public class PedidoService {
     private final PedidoRepository pedidoRepository;
     private final PagoRepository pagoRepository;
     private final CatalogServiceClient catalogClient;
+    private final ClienteService clienteService;
     private final ApplicationEventPublisher eventos;
 
     @Transactional(readOnly = true)
     public List<PedidoResponse> listar(UsuarioActual usuario, EstadoPedido estado) {
         List<Pedido> pedidos;
-        if (!usuario.esAdmin()) {
+        if (usuario.esClienteLegacy()) {
             pedidos = pedidoRepository.findByClienteOrderByFechaPedidoDesc(usuario.nombre());
         } else if (estado != null) {
             pedidos = pedidoRepository.findByEstadoOrderByFechaPedidoDesc(estado);
@@ -66,10 +65,13 @@ public class PedidoService {
     @Transactional
     public PedidoResponse registrar(PedidoRequest request, UsuarioActual usuario) {
         ServicioCatalogoResponse servicio = servicioActivo(request.idservicio());
+        Cliente cliente = resolverCliente(request.idcliente(), usuario);
         LocalDateTime ahora = LocalDateTime.now();
 
         Pedido pedido = Pedido.builder()
-                .cliente(usuario.nombre())
+                .idcliente(cliente == null ? null : cliente.getIdcliente())
+                .cliente(cliente == null ? usuario.nombre() : cliente.getRazonSocial())
+                .registradoPor(usuario.nombre())
                 .idservicio(servicio.idservicio())
                 .nombreServicio(servicio.nombre())
                 .precioUnitario(servicio.precioBase())
@@ -78,8 +80,9 @@ public class PedidoService {
                 .estado(EstadoPedido.REGISTRADO)
                 .especificaciones(request.especificaciones())
                 .observacion(Boolean.TRUE.equals(servicio.requiereCotizacion())
-                        ? "Precio referencial: el servicio requiere cotización" : null)
+                        ? "Servicio sujeto a cotización; validar precio acordado antes del pago" : null)
                 .fechaPedido(ahora)
+                .fechaEntrega(request.fechaEntrega())
                 .fechaActualizacion(ahora)
                 .build();
 
@@ -94,12 +97,18 @@ public class PedidoService {
         exigirEstado(pedido, EstadoPedido.REGISTRADO, "Solo se puede modificar un pedido en estado REGISTRADO");
 
         ServicioCatalogoResponse servicio = servicioActivo(request.idservicio());
+        if (!usuario.esClienteLegacy()) {
+            Cliente cliente = clienteService.buscarActivo(request.idcliente());
+            pedido.setIdcliente(cliente.getIdcliente());
+            pedido.setCliente(cliente.getRazonSocial());
+        }
         pedido.setIdservicio(servicio.idservicio());
         pedido.setNombreServicio(servicio.nombre());
         pedido.setPrecioUnitario(servicio.precioBase());
         pedido.setCantidad(request.cantidad());
         pedido.setTotal(calcularTotal(servicio.precioBase(), request.cantidad()));
         pedido.setEspecificaciones(request.especificaciones());
+        pedido.setFechaEntrega(request.fechaEntrega());
         pedido.setFechaActualizacion(LocalDateTime.now());
 
         return PedidoResponse.from(pedidoRepository.save(pedido));
@@ -122,7 +131,6 @@ public class PedidoService {
         return PedidoResponse.from(pedidoRepository.save(pedido));
     }
 
-    /** El cliente puede cancelar su pedido mientras no haya entrado a diseño o producción. */
     @Transactional
     public PedidoResponse cancelar(Integer id, UsuarioActual usuario) {
         Pedido pedido = buscarVisible(id, usuario);
@@ -130,12 +138,18 @@ public class PedidoService {
         return PedidoResponse.from(pedidoRepository.save(pedido));
     }
 
+    @Transactional
+    public PedidoResponse registrarEntrega(Integer id, UsuarioActual usuario) {
+        Pedido pedido = buscarVisible(id, usuario);
+        exigirEstado(pedido, EstadoPedido.TERMINADO, "Solo un trabajo TERMINADO puede registrarse como entregado");
+        aplicarTransicion(pedido, EstadoPedido.ENTREGADO, "Entrega registrada por " + usuario.nombre());
+        return PedidoResponse.from(pedidoRepository.save(pedido));
+    }
+
     @Transactional(readOnly = true)
     public ResumenVentasResponse resumen() {
         Map<String, Long> porEstado = new LinkedHashMap<>();
-        for (EstadoPedido e : EstadoPedido.values()) {
-            porEstado.put(e.name(), 0L);
-        }
+        for (EstadoPedido e : EstadoPedido.values()) porEstado.put(e.name(), 0L);
         long total = 0;
         for (var conteo : pedidoRepository.contarPorEstado()) {
             porEstado.put(conteo.getEstado().name(), conteo.getCantidad());
@@ -150,9 +164,7 @@ public class PedidoService {
                     + ". Estados permitidos: " + pedido.getEstado().siguientes());
         }
         pedido.setEstado(destino);
-        if (observacion != null && !observacion.isBlank()) {
-            pedido.setObservacion(observacion);
-        }
+        if (observacion != null && !observacion.isBlank()) pedido.setObservacion(observacion);
         pedido.setFechaActualizacion(LocalDateTime.now());
         publicar("PEDIDO_" + destino.name(), pedido);
     }
@@ -162,26 +174,27 @@ public class PedidoService {
                 .orElseThrow(() -> new RecursoNoEncontradoException("Pedido no encontrado"));
     }
 
-    /** Un pedido ajeno se responde como "no encontrado" para no revelar que existe. */
     Pedido buscarVisible(Integer id, UsuarioActual usuario) {
         Pedido pedido = buscar(id);
-        if (!usuario.esAdmin() && !pedido.getCliente().equals(usuario.nombre())) {
+        if (usuario.esClienteLegacy() && !pedido.getCliente().equals(usuario.nombre())) {
             throw new RecursoNoEncontradoException("Pedido no encontrado");
         }
         return pedido;
     }
 
+    private Cliente resolverCliente(Integer idcliente, UsuarioActual usuario) {
+        if (usuario.esClienteLegacy() && idcliente == null) return null;
+        if (idcliente == null) throw new ReglaNegocioException("Seleccione un cliente registrado antes de crear el pedido");
+        return clienteService.buscarActivo(idcliente);
+    }
+
     private void exigirEstado(Pedido pedido, EstadoPedido esperado, String mensaje) {
-        if (pedido.getEstado() != esperado) {
-            throw new ReglaNegocioException(mensaje);
-        }
+        if (pedido.getEstado() != esperado) throw new ReglaNegocioException(mensaje);
     }
 
     private ServicioCatalogoResponse servicioActivo(Integer idservicio) {
         ServicioCatalogoResponse servicio = catalogClient.obtenerServicio(idservicio);
-        if (!Boolean.TRUE.equals(servicio.activo())) {
-            throw new ReglaNegocioException("El servicio seleccionado no está disponible");
-        }
+        if (!Boolean.TRUE.equals(servicio.activo())) throw new ReglaNegocioException("El servicio seleccionado no está disponible");
         return servicio;
     }
 
@@ -190,7 +203,8 @@ public class PedidoService {
     }
 
     private void publicar(String tipo, Pedido pedido) {
-        eventos.publishEvent(PedidoEvento.de(tipo, pedido.getIdpedido(), pedido.getCliente(),
+        String destinatarioInterno = pedido.getRegistradoPor() != null ? pedido.getRegistradoPor() : pedido.getCliente();
+        eventos.publishEvent(PedidoEvento.de(tipo, pedido.getIdpedido(), destinatarioInterno,
                 pedido.getEstado().name(), pedido.getTotal()));
     }
 }
