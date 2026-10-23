@@ -4,6 +4,7 @@ import jakarta.validation.constraints.*;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 public record PedidoRequest(
         Integer idcliente,
@@ -21,22 +22,31 @@ public record PedidoRequest(
 
         LocalDateTime fechaEntrega,
 
-        /** Precio unitario calculado por las opciones del servicio personalizable. */
+        /** Campo legacy. El backend ya no confía en este valor cuando llegan opcionesSeleccionadas. */
         @DecimalMin(value = "0.00", message = "El precio unitario no puede ser negativo")
         @Digits(integer = 10, fraction = 2, message = "El precio admite como máximo 2 decimales")
         BigDecimal precioUnitarioAcordado,
 
-        /** Resumen auditable: precio base + opciones seleccionadas. */
+        /** Campo legacy para compatibilidad; el detalle nuevo se genera en backend. */
         @Size(max = 1000, message = "El detalle del precio no puede superar 1000 caracteres")
-        String detallePrecio
+        String detallePrecio,
+
+        /** IDs de las opciones elegidas (una por grupo) para servicios personalizables. */
+        List<Integer> opcionesSeleccionadas
 ) {
+    /** Contrato inmediatamente anterior. */
+    public PedidoRequest(Integer idcliente, Integer idservicio, Integer cantidad, String especificaciones,
+                         LocalDateTime fechaEntrega, BigDecimal precioUnitarioAcordado, String detallePrecio) {
+        this(idcliente, idservicio, cantidad, especificaciones, fechaEntrega, precioUnitarioAcordado, detallePrecio, null);
+    }
+
     /** Contrato anterior usado por el frontend previo. */
     public PedidoRequest(Integer idcliente, Integer idservicio, Integer cantidad, String especificaciones, LocalDateTime fechaEntrega) {
-        this(idcliente, idservicio, cantidad, especificaciones, fechaEntrega, null, null);
+        this(idcliente, idservicio, cantidad, especificaciones, fechaEntrega, null, null, null);
     }
 
     /** Constructor compatible con pruebas históricas. */
     public PedidoRequest(Integer idservicio, Integer cantidad, String especificaciones) {
-        this(null, idservicio, cantidad, especificaciones, null, null, null);
+        this(null, idservicio, cantidad, especificaciones, null, null, null, null);
     }
 }
