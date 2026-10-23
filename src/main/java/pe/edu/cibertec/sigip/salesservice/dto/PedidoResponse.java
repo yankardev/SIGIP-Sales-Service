@@ -21,6 +21,7 @@ public record PedidoResponse(
         EstadoPedido estado,
         Set<EstadoPedido> siguientesEstados,
         String especificaciones,
+        String detallePrecio,
         String observacion,
         LocalDateTime fechaPedido,
         LocalDateTime fechaEntrega,
@@ -30,6 +31,6 @@ public record PedidoResponse(
         return new PedidoResponse(p.getIdpedido(), p.getIdcliente(), p.getCliente(), p.getRegistradoPor(),
                 p.getIdcotizacion(), p.getIdservicio(), p.getNombreServicio(), p.getPrecioUnitario(),
                 p.getCantidad(), p.getTotal(), p.getEstado(), p.getEstado().siguientes(), p.getEspecificaciones(),
-                p.getObservacion(), p.getFechaPedido(), p.getFechaEntrega(), p.getFechaActualizacion());
+                p.getDetallePrecio(), p.getObservacion(), p.getFechaPedido(), p.getFechaEntrega(), p.getFechaActualizacion());
     }
 }
