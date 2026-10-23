@@ -24,17 +24,14 @@ public class Pedido {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Integer idpedido;
 
-    /** Cliente comercial; se conserva el nombre como snapshot para trazabilidad. */
     private Integer idcliente;
 
     @Column(nullable = false, length = 180)
     private String cliente;
 
-    /** Usuario interno que registró el trabajo. */
     @Column(length = 50)
     private String registradoPor;
 
-    /** Cotización de origen cuando el pedido nació de una propuesta comercial. */
     private Integer idcotizacion;
 
     @Column(nullable = false)
@@ -58,6 +55,10 @@ public class Pedido {
 
     @Column(length = 1000)
     private String especificaciones;
+
+    /** Desglose usado para saber exactamente qué opciones originaron el precio cobrado. */
+    @Column(name = "detalle_precio", length = 1000)
+    private String detallePrecio;
 
     @Column(length = 500)
     private String observacion;
