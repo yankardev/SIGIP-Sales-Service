@@ -12,6 +12,7 @@ import pe.edu.cibertec.sigip.salesservice.client.CatalogServiceClient;
 import pe.edu.cibertec.sigip.salesservice.client.ServicioCatalogoResponse;
 import pe.edu.cibertec.sigip.salesservice.dto.*;
 import pe.edu.cibertec.sigip.salesservice.model.Cliente;
+import pe.edu.cibertec.sigip.salesservice.model.Cotizacion;
 import pe.edu.cibertec.sigip.salesservice.model.EstadoPedido;
 import pe.edu.cibertec.sigip.salesservice.model.Pedido;
 import pe.edu.cibertec.sigip.salesservice.repository.PagoRepository;
@@ -24,10 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Flujo central de SIGIP. En el sistema interno Ventas registra un pedido para un
- * cliente comercial y Operaciones continúa diseño/producción hasta la entrega.
- */
+/** Flujo central de SIGIP desde la venta hasta la entrega. */
 @Service
 @RequiredArgsConstructor
 public class PedidoService {
@@ -44,17 +42,10 @@ public class PedidoService {
     @Transactional(readOnly = true)
     public List<PedidoResponse> listar(UsuarioActual usuario, EstadoPedido estado) {
         List<Pedido> pedidos;
-        if (usuario.esClienteLegacy()) {
-            pedidos = pedidoRepository.findByClienteOrderByFechaPedidoDesc(usuario.nombre());
-        } else if (estado != null) {
-            pedidos = pedidoRepository.findByEstadoOrderByFechaPedidoDesc(estado);
-        } else {
-            pedidos = pedidoRepository.findAllByOrderByFechaPedidoDesc();
-        }
-        return pedidos.stream()
-                .filter(p -> estado == null || p.getEstado() == estado)
-                .map(PedidoResponse::from)
-                .toList();
+        if (usuario.esClienteLegacy()) pedidos = pedidoRepository.findByClienteOrderByFechaPedidoDesc(usuario.nombre());
+        else if (estado != null) pedidos = pedidoRepository.findByEstadoOrderByFechaPedidoDesc(estado);
+        else pedidos = pedidoRepository.findAllByOrderByFechaPedidoDesc();
+        return pedidos.stream().filter(p -> estado == null || p.getEstado() == estado).map(PedidoResponse::from).toList();
     }
 
     @Transactional(readOnly = true)
@@ -67,7 +58,6 @@ public class PedidoService {
         ServicioCatalogoResponse servicio = servicioActivo(request.idservicio());
         Cliente cliente = resolverCliente(request.idcliente(), usuario);
         LocalDateTime ahora = LocalDateTime.now();
-
         Pedido pedido = Pedido.builder()
                 .idcliente(cliente == null ? null : cliente.getIdcliente())
                 .cliente(cliente == null ? usuario.nombre() : cliente.getRazonSocial())
@@ -79,13 +69,36 @@ public class PedidoService {
                 .total(calcularTotal(servicio.precioBase(), request.cantidad()))
                 .estado(EstadoPedido.REGISTRADO)
                 .especificaciones(request.especificaciones())
-                .observacion(Boolean.TRUE.equals(servicio.requiereCotizacion())
-                        ? "Servicio sujeto a cotización; validar precio acordado antes del pago" : null)
+                .observacion(Boolean.TRUE.equals(servicio.requiereCotizacion()) ? "Servicio sujeto a cotización; validar precio acordado antes del pago" : null)
                 .fechaPedido(ahora)
                 .fechaEntrega(request.fechaEntrega())
                 .fechaActualizacion(ahora)
                 .build();
+        Pedido guardado = pedidoRepository.save(pedido);
+        publicar("PEDIDO_REGISTRADO", guardado);
+        return PedidoResponse.from(guardado);
+    }
 
+    /** Crea el pedido respetando el precio ya acordado en una cotización aprobada. */
+    @Transactional
+    public PedidoResponse registrarDesdeCotizacion(Cotizacion c, UsuarioActual usuario) {
+        LocalDateTime ahora = LocalDateTime.now();
+        Pedido pedido = Pedido.builder()
+                .idcliente(c.getIdcliente())
+                .cliente(c.getCliente())
+                .registradoPor(usuario.nombre())
+                .idcotizacion(c.getIdcotizacion())
+                .idservicio(c.getIdservicio())
+                .nombreServicio(c.getNombreServicio())
+                .precioUnitario(c.getPrecioUnitario())
+                .cantidad(c.getCantidad())
+                .total(c.getTotal())
+                .estado(EstadoPedido.REGISTRADO)
+                .especificaciones(c.getEspecificaciones())
+                .observacion("Pedido generado desde cotización #" + c.getIdcotizacion())
+                .fechaPedido(ahora)
+                .fechaActualizacion(ahora)
+                .build();
         Pedido guardado = pedidoRepository.save(pedido);
         publicar("PEDIDO_REGISTRADO", guardado);
         return PedidoResponse.from(guardado);
@@ -95,7 +108,6 @@ public class PedidoService {
     public PedidoResponse actualizar(Integer id, PedidoRequest request, UsuarioActual usuario) {
         Pedido pedido = buscarVisible(id, usuario);
         exigirEstado(pedido, EstadoPedido.REGISTRADO, "Solo se puede modificar un pedido en estado REGISTRADO");
-
         ServicioCatalogoResponse servicio = servicioActivo(request.idservicio());
         if (!usuario.esClienteLegacy()) {
             Cliente cliente = clienteService.buscarActivo(request.idcliente());
@@ -110,7 +122,6 @@ public class PedidoService {
         pedido.setEspecificaciones(request.especificaciones());
         pedido.setFechaEntrega(request.fechaEntrega());
         pedido.setFechaActualizacion(LocalDateTime.now());
-
         return PedidoResponse.from(pedidoRepository.save(pedido));
     }
 
@@ -118,9 +129,7 @@ public class PedidoService {
     public void eliminar(Integer id, UsuarioActual usuario) {
         Pedido pedido = buscarVisible(id, usuario);
         exigirEstado(pedido, EstadoPedido.REGISTRADO, "Solo se puede eliminar un pedido REGISTRADO; use la cancelación");
-        if (pagoRepository.existsByPedidoIdpedido(id)) {
-            throw new ReglaNegocioException("El pedido tiene pagos registrados; use la cancelación");
-        }
+        if (pagoRepository.existsByPedidoIdpedido(id)) throw new ReglaNegocioException("El pedido tiene pagos registrados; use la cancelación");
         pedidoRepository.delete(pedido);
     }
 
@@ -159,10 +168,8 @@ public class PedidoService {
     }
 
     void aplicarTransicion(Pedido pedido, EstadoPedido destino, String observacion) {
-        if (!pedido.getEstado().puedePasarA(destino)) {
-            throw new ReglaNegocioException("No se puede pasar de " + pedido.getEstado() + " a " + destino
-                    + ". Estados permitidos: " + pedido.getEstado().siguientes());
-        }
+        if (!pedido.getEstado().puedePasarA(destino))
+            throw new ReglaNegocioException("No se puede pasar de " + pedido.getEstado() + " a " + destino + ". Estados permitidos: " + pedido.getEstado().siguientes());
         pedido.setEstado(destino);
         if (observacion != null && !observacion.isBlank()) pedido.setObservacion(observacion);
         pedido.setFechaActualizacion(LocalDateTime.now());
@@ -170,15 +177,12 @@ public class PedidoService {
     }
 
     Pedido buscar(Integer id) {
-        return pedidoRepository.findById(id)
-                .orElseThrow(() -> new RecursoNoEncontradoException("Pedido no encontrado"));
+        return pedidoRepository.findById(id).orElseThrow(() -> new RecursoNoEncontradoException("Pedido no encontrado"));
     }
 
     Pedido buscarVisible(Integer id, UsuarioActual usuario) {
         Pedido pedido = buscar(id);
-        if (usuario.esClienteLegacy() && !pedido.getCliente().equals(usuario.nombre())) {
-            throw new RecursoNoEncontradoException("Pedido no encontrado");
-        }
+        if (usuario.esClienteLegacy() && !pedido.getCliente().equals(usuario.nombre())) throw new RecursoNoEncontradoException("Pedido no encontrado");
         return pedido;
     }
 
@@ -204,7 +208,6 @@ public class PedidoService {
 
     private void publicar(String tipo, Pedido pedido) {
         String destinatarioInterno = pedido.getRegistradoPor() != null ? pedido.getRegistradoPor() : pedido.getCliente();
-        eventos.publishEvent(PedidoEvento.de(tipo, pedido.getIdpedido(), destinatarioInterno,
-                pedido.getEstado().name(), pedido.getTotal()));
+        eventos.publishEvent(PedidoEvento.de(tipo, pedido.getIdpedido(), destinatarioInterno, pedido.getEstado().name(), pedido.getTotal()));
     }
 }
