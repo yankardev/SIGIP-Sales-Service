@@ -5,7 +5,11 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
+import java.time.LocalDateTime;
+
 public record PedidoRequest(
+        Integer idcliente,
+
         @NotNull(message = "El servicio es obligatorio")
         Integer idservicio,
 
@@ -15,6 +19,12 @@ public record PedidoRequest(
         Integer cantidad,
 
         @Size(max = 1000, message = "Las especificaciones no pueden superar 1000 caracteres")
-        String especificaciones
+        String especificaciones,
+
+        LocalDateTime fechaEntrega
 ) {
+    /** Constructor compatible con el contrato anterior usado por pruebas históricas. */
+    public PedidoRequest(Integer idservicio, Integer cantidad, String especificaciones) {
+        this(null, idservicio, cantidad, especificaciones, null);
+    }
 }
