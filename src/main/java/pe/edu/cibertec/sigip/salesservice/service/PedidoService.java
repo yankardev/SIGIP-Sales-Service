@@ -10,6 +10,7 @@ import pe.edu.cibertec.sigip.common.evento.PedidoEvento;
 import pe.edu.cibertec.sigip.common.security.UsuarioActual;
 import pe.edu.cibertec.sigip.salesservice.client.CatalogServiceClient;
 import pe.edu.cibertec.sigip.salesservice.client.ServicioCatalogoResponse;
+import pe.edu.cibertec.sigip.salesservice.client.ServicioOpcionCatalogoResponse;
 import pe.edu.cibertec.sigip.salesservice.dto.*;
 import pe.edu.cibertec.sigip.salesservice.model.Cliente;
 import pe.edu.cibertec.sigip.salesservice.model.Cotizacion;
@@ -19,11 +20,15 @@ import pe.edu.cibertec.sigip.salesservice.repository.PagoRepository;
 import pe.edu.cibertec.sigip.salesservice.repository.PedidoRepository;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /** Flujo central de SIGIP desde la venta hasta la entrega. */
 @Service
@@ -57,7 +62,7 @@ public class PedidoService {
     public PedidoResponse registrar(PedidoRequest request, UsuarioActual usuario) {
         ServicioCatalogoResponse servicio = servicioActivo(request.idservicio());
         Cliente cliente = resolverCliente(request.idcliente(), usuario);
-        BigDecimal precio = resolverPrecio(servicio, request);
+        CalculoPrecio calculo = resolverPrecio(servicio, request);
         LocalDateTime ahora = LocalDateTime.now();
         Pedido pedido = Pedido.builder()
                 .idcliente(cliente == null ? null : cliente.getIdcliente())
@@ -65,12 +70,12 @@ public class PedidoService {
                 .registradoPor(usuario.nombre())
                 .idservicio(servicio.idservicio())
                 .nombreServicio(servicio.nombre())
-                .precioUnitario(precio)
+                .precioUnitario(calculo.precioUnitario())
                 .cantidad(request.cantidad())
-                .total(calcularTotal(precio, request.cantidad()))
+                .total(calcularTotal(calculo.precioUnitario(), request.cantidad()))
                 .estado(EstadoPedido.REGISTRADO)
                 .especificaciones(request.especificaciones())
-                .detallePrecio(detallePrecio(servicio, request, precio))
+                .detallePrecio(calculo.detalle())
                 .observacion(null)
                 .fechaPedido(ahora)
                 .fechaEntrega(request.fechaEntrega())
@@ -112,7 +117,7 @@ public class PedidoService {
         Pedido pedido = buscarVisible(id, usuario);
         exigirEstado(pedido, EstadoPedido.REGISTRADO, "Solo se puede modificar un pedido en estado REGISTRADO");
         ServicioCatalogoResponse servicio = servicioActivo(request.idservicio());
-        BigDecimal precio = resolverPrecio(servicio, request);
+        CalculoPrecio calculo = resolverPrecio(servicio, request);
         if (!usuario.esClienteLegacy()) {
             Cliente cliente = clienteService.buscarActivo(request.idcliente());
             pedido.setIdcliente(cliente.getIdcliente());
@@ -120,11 +125,11 @@ public class PedidoService {
         }
         pedido.setIdservicio(servicio.idservicio());
         pedido.setNombreServicio(servicio.nombre());
-        pedido.setPrecioUnitario(precio);
+        pedido.setPrecioUnitario(calculo.precioUnitario());
         pedido.setCantidad(request.cantidad());
-        pedido.setTotal(calcularTotal(precio, request.cantidad()));
+        pedido.setTotal(calcularTotal(calculo.precioUnitario(), request.cantidad()));
         pedido.setEspecificaciones(request.especificaciones());
-        pedido.setDetallePrecio(detallePrecio(servicio, request, precio));
+        pedido.setDetallePrecio(calculo.detalle());
         pedido.setFechaEntrega(request.fechaEntrega());
         pedido.setFechaActualizacion(LocalDateTime.now());
         return PedidoResponse.from(pedidoRepository.save(pedido));
@@ -207,28 +212,74 @@ public class PedidoService {
         return servicio;
     }
 
-    private BigDecimal resolverPrecio(ServicioCatalogoResponse servicio, PedidoRequest request) {
-        if (!Boolean.TRUE.equals(servicio.personalizable())) return servicio.precioBase();
+    /**
+     * El precio de un servicio personalizable se vuelve a calcular en backend usando
+     * las opciones vigentes de catalog-service. Angular solo envía los IDs elegidos.
+     */
+    private CalculoPrecio resolverPrecio(ServicioCatalogoResponse servicio, PedidoRequest request) {
+        BigDecimal base = servicio.precioBase().setScale(2, RoundingMode.HALF_UP);
+        if (!Boolean.TRUE.equals(servicio.personalizable())) {
+            return new CalculoPrecio(base, "Precio fijo de catálogo: S/ " + base.toPlainString());
+        }
+
+        List<Integer> ids = request.opcionesSeleccionadas();
+        if (ids != null && !ids.isEmpty()) {
+            List<ServicioOpcionCatalogoResponse> disponibles = catalogClient.obtenerOpciones(servicio.idservicio());
+            if (disponibles.isEmpty())
+                throw new ReglaNegocioException("El servicio está marcado como personalizable pero no tiene opciones configuradas");
+
+            Map<Integer, ServicioOpcionCatalogoResponse> porId = disponibles.stream()
+                    .collect(Collectors.toMap(ServicioOpcionCatalogoResponse::idopcion, o -> o));
+            Set<Integer> idsUnicos = new LinkedHashSet<>(ids);
+            if (idsUnicos.size() != ids.size())
+                throw new ReglaNegocioException("No repita opciones de personalización");
+
+            Set<String> gruposDisponibles = disponibles.stream().map(ServicioOpcionCatalogoResponse::grupo)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            List<ServicioOpcionCatalogoResponse> elegidas = ids.stream().map(id -> {
+                ServicioOpcionCatalogoResponse opcion = porId.get(id);
+                if (opcion == null) throw new ReglaNegocioException("Una opción seleccionada no pertenece al servicio");
+                return opcion;
+            }).toList();
+            Set<String> gruposElegidos = elegidas.stream().map(ServicioOpcionCatalogoResponse::grupo)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+
+            if (gruposElegidos.size() != elegidas.size())
+                throw new ReglaNegocioException("Seleccione solo una opción por grupo");
+            if (!gruposElegidos.equals(gruposDisponibles))
+                throw new ReglaNegocioException("Seleccione una opción de cada grupo: " + String.join(", ", gruposDisponibles));
+
+            BigDecimal precio = base;
+            StringBuilder detalle = new StringBuilder("Precio base S/ ").append(base.toPlainString());
+            for (ServicioOpcionCatalogoResponse opcion : elegidas) {
+                BigDecimal incremento = opcion.incremento() == null ? BigDecimal.ZERO : opcion.incremento();
+                precio = precio.add(incremento);
+                detalle.append(" | ").append(opcion.grupo()).append(": ").append(opcion.nombre())
+                        .append(" (+S/ ").append(incremento.setScale(2, RoundingMode.HALF_UP).toPlainString()).append(")");
+            }
+            precio = precio.setScale(2, RoundingMode.HALF_UP);
+            detalle.append(" | Precio unitario final S/ ").append(precio.toPlainString());
+            return new CalculoPrecio(precio, detalle.toString());
+        }
+
+        // Compatibilidad temporal con clientes anteriores a opcionesSeleccionadas.
         if (request.precioUnitarioAcordado() == null)
             throw new ReglaNegocioException("Seleccione las opciones del servicio para calcular el precio final");
-        if (request.precioUnitarioAcordado().compareTo(servicio.precioBase()) < 0)
+        if (request.precioUnitarioAcordado().compareTo(base) < 0)
             throw new ReglaNegocioException("El precio personalizado no puede ser menor al precio base del catálogo");
         if (request.detallePrecio() == null || request.detallePrecio().isBlank())
             throw new ReglaNegocioException("Debe enviarse el detalle de las opciones que forman el precio personalizado");
-        return request.precioUnitarioAcordado();
-    }
-
-    private String detallePrecio(ServicioCatalogoResponse servicio, PedidoRequest request, BigDecimal precio) {
-        if (Boolean.TRUE.equals(servicio.personalizable())) return request.detallePrecio();
-        return "Precio fijo de catálogo: S/ " + precio;
+        return new CalculoPrecio(request.precioUnitarioAcordado().setScale(2, RoundingMode.HALF_UP), request.detallePrecio());
     }
 
     private BigDecimal calcularTotal(BigDecimal precio, Integer cantidad) {
-        return precio.multiply(BigDecimal.valueOf(cantidad));
+        return precio.multiply(BigDecimal.valueOf(cantidad)).setScale(2, RoundingMode.HALF_UP);
     }
 
     private void publicar(String tipo, Pedido pedido) {
         String destinatarioInterno = pedido.getRegistradoPor() != null ? pedido.getRegistradoPor() : pedido.getCliente();
         eventos.publishEvent(PedidoEvento.de(tipo, pedido.getIdpedido(), destinatarioInterno, pedido.getEstado().name(), pedido.getTotal()));
     }
+
+    private record CalculoPrecio(BigDecimal precioUnitario, String detalle) { }
 }
