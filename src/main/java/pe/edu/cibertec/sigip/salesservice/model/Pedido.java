@@ -6,13 +6,11 @@ import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
-/**
- * Pedido de un cliente. Guarda una copia del nombre y precio del servicio al momento de la compra:
- * si luego cambia el catálogo, el pedido ya acordado no se altera.
- */
+/** Pedido interno de la empresa asociado a un cliente comercial registrado. */
 @Entity
 @Table(name = "pedidos", indexes = {
         @Index(name = "idx_pedido_cliente", columnList = "cliente"),
+        @Index(name = "idx_pedido_idcliente", columnList = "idcliente"),
         @Index(name = "idx_pedido_estado", columnList = "estado")
 })
 @Getter
@@ -26,9 +24,18 @@ public class Pedido {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Integer idpedido;
 
-    /** Usuario (nomusuario) dueño del pedido, tomado del token, nunca del JSON. */
-    @Column(nullable = false, length = 50)
+    /** Cliente comercial; se conserva el nombre como snapshot para trazabilidad. */
+    private Integer idcliente;
+
+    @Column(nullable = false, length = 180)
     private String cliente;
+
+    /** Usuario interno que registró el trabajo. */
+    @Column(length = 50)
+    private String registradoPor;
+
+    /** Cotización de origen cuando el pedido nació de una propuesta comercial. */
+    private Integer idcotizacion;
 
     @Column(nullable = false)
     private Integer idservicio;
@@ -49,7 +56,6 @@ public class Pedido {
     @Column(nullable = false, length = 30)
     private EstadoPedido estado;
 
-    /** Indicaciones del cliente: medidas, colores, enlace al archivo, etc. */
     @Column(length = 1000)
     private String especificaciones;
 
@@ -59,9 +65,9 @@ public class Pedido {
     @Column(nullable = false)
     private LocalDateTime fechaPedido;
 
+    private LocalDateTime fechaEntrega;
     private LocalDateTime fechaActualizacion;
 
-    /** Bloqueo optimista: evita que dos actualizaciones simultáneas se pisen. */
     @Version
     private Long version;
 }
