@@ -1,10 +1,8 @@
 package pe.edu.cibertec.sigip.salesservice.dto;
 
-import jakarta.validation.constraints.Max;
-import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Size;
+import jakarta.validation.constraints.*;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 public record PedidoRequest(
@@ -21,10 +19,24 @@ public record PedidoRequest(
         @Size(max = 1000, message = "Las especificaciones no pueden superar 1000 caracteres")
         String especificaciones,
 
-        LocalDateTime fechaEntrega
+        LocalDateTime fechaEntrega,
+
+        /** Precio unitario calculado por las opciones del servicio personalizable. */
+        @DecimalMin(value = "0.00", message = "El precio unitario no puede ser negativo")
+        @Digits(integer = 10, fraction = 2, message = "El precio admite como máximo 2 decimales")
+        BigDecimal precioUnitarioAcordado,
+
+        /** Resumen auditable: precio base + opciones seleccionadas. */
+        @Size(max = 1000, message = "El detalle del precio no puede superar 1000 caracteres")
+        String detallePrecio
 ) {
-    /** Constructor compatible con el contrato anterior usado por pruebas históricas. */
+    /** Contrato anterior usado por el frontend previo. */
+    public PedidoRequest(Integer idcliente, Integer idservicio, Integer cantidad, String especificaciones, LocalDateTime fechaEntrega) {
+        this(idcliente, idservicio, cantidad, especificaciones, fechaEntrega, null, null);
+    }
+
+    /** Constructor compatible con pruebas históricas. */
     public PedidoRequest(Integer idservicio, Integer cantidad, String especificaciones) {
-        this(null, idservicio, cantidad, especificaciones, null);
+        this(null, idservicio, cantidad, especificaciones, null, null, null);
     }
 }
